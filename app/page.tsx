@@ -8,8 +8,25 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import {
+  ALL_SUBTOPICS,
+  ALL_SUBTOPIC_IDS,
+  SUBJECTS,
+  TOTAL_SUBTOPICS,
+  getSubtopicsBySubject,
+  type AccentColor,
+  type Subject,
+  type Subtopic,
+} from "./data/curriculum";
+
+import TkaExercise, {
+  isSubtopicUnlocked,
+  tkaCorrectCount,
+  type AnswerMap,
+} from "./components/TkaExercise";
+
 /* ------------------------------------------------------------------
- * 1. KONFIGURASI & DATA DUMMY MATERI TKA
+ * 1. KONFIGURASI & DATA MATERI TKA
  * ----------------------------------------------------------------*/
 
 /** Target waktu belajar (30 hari) dihitung sejak halaman pertama dibuka. */
@@ -19,163 +36,8 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 /** Kunci penyimpanan LocalStorage. */
 const STORAGE_KEY_PROGRESS = "tka-planner:progress:v1";
 const STORAGE_KEY_START = "tka-planner:start-date:v1";
+const STORAGE_KEY_ANSWERS = "tka-planner:answers:v1";
 
-/** Warna aksen per mata pelajaran (class Tailwind harus literal/statis). */
-type AccentColor = "indigo" | "rose" | "sky" | "amber" | "emerald";
-
-type Subtopic = {
-  /** ID unik & stabil, dipakai sebagai key LocalStorage. */
-  id: string;
-  title: string;
-  /** Estimasi alokasi waktu belajar (menit). */
-  estimatedMinutes: number;
-};
-
-type Subject = {
-  id: string;
-  title: string;
-  /** Label singkat untuk tab filter (ramah mobile). */
-  shortTitle: string;
-  icon: string;
-  accent: AccentColor;
-  description: string;
-  subtopics: Subtopic[];
-};
-
-const SUBJECTS: Subject[] = [
-  {
-    id: "matematika-wajib",
-    title: "Matematika Wajib",
-    shortTitle: "Mat. Wajib",
-    icon: "📐",
-    accent: "indigo",
-    description: "Fondasi berhitung, penalaran, dan interpretasi data.",
-    subtopics: [
-      { id: "mw-aljabar", title: "Aljabar", estimatedMinutes: 180 },
-      {
-        id: "mw-geometri-trigonometri",
-        title: "Geometri & Trigonometri",
-        estimatedMinutes: 200,
-      },
-      {
-        id: "mw-analisis-data-peluang",
-        title: "Analisis Data & Peluang",
-        estimatedMinutes: 150,
-      },
-      {
-        id: "mw-kalkulus-dasar",
-        title: "Kalkulus Dasar",
-        estimatedMinutes: 170,
-      },
-    ],
-  },
-  {
-    id: "bahasa-indonesia",
-    title: "Bahasa Indonesia",
-    shortTitle: "B. Indonesia",
-    icon: "📖",
-    accent: "rose",
-    description: "Literasi baca-tulis dan ketelitian berbahasa.",
-    subtopics: [
-      {
-        id: "bi-membaca-teks",
-        title: "Membaca & Memahami Teks",
-        estimatedMinutes: 120,
-      },
-      { id: "bi-menulis-teks", title: "Menulis Teks", estimatedMinutes: 120 },
-      { id: "bi-kebahasaaan", title: "Kebahasaaan", estimatedMinutes: 90 },
-      { id: "bi-evaluasi-teks", title: "Evaluasi Teks", estimatedMinutes: 90 },
-    ],
-  },
-  {
-    id: "bahasa-inggris-wajib",
-    title: "Bahasa Inggris Wajib",
-    shortTitle: "B. Inggris",
-    icon: "🔤",
-    accent: "sky",
-    description: "Pemahaman teks, struktur, dan kosakata kontekstual.",
-    subtopics: [
-      {
-        id: "biw-reading-comprehension",
-        title: "Reading Comprehension",
-        estimatedMinutes: 150,
-      },
-      {
-        id: "biw-structure-grammar",
-        title: "Structure & Grammar",
-        estimatedMinutes: 150,
-      },
-      {
-        id: "biw-vocabulary-in-context",
-        title: "Vocabulary in Context",
-        estimatedMinutes: 120,
-      },
-      {
-        id: "biw-text-functional",
-        title: "Text Functional",
-        estimatedMinutes: 90,
-      },
-    ],
-  },
-  {
-    id: "matematika-tingkat-lanjut",
-    title: "Matematika Tingkat Lanjut",
-    shortTitle: "Mat. Lanjut",
-    icon: "🧮",
-    accent: "amber",
-    description: "Materi pengayaan untuk soal-soal tingkat lanjut.",
-    subtopics: [
-      { id: "mtl-polinomial", title: "Polinomial", estimatedMinutes: 180 },
-      {
-        id: "mtl-matriks-vektor",
-        title: "Matriks & Vektor",
-        estimatedMinutes: 200,
-      },
-      {
-        id: "mtl-fungsi-trigonometri-lanjutan",
-        title: "Fungsi Trigonometri Lanjutan",
-        estimatedMinutes: 180,
-      },
-      {
-        id: "mtl-kalkulus-lanjut",
-        title: "Kalkulus Lanjut (Integral/Turunan Lanjutan)",
-        estimatedMinutes: 240,
-      },
-    ],
-  },
-  {
-    id: "bahasa-inggris-tingkat-lanjut",
-    title: "Bahasa Inggris Tingkat Lanjut",
-    shortTitle: "B. Inggris Lanjut",
-    icon: "🎓",
-    accent: "emerald",
-    description: "Membaca kritis dan menulis akademik tingkat lanjut.",
-    subtopics: [
-      {
-        id: "bitl-advanced-critical-reading",
-        title: "Advanced Critical Reading",
-        estimatedMinutes: 180,
-      },
-      {
-        id: "bitl-complex-grammar-academic-writing",
-        title: "Complex Grammar & Academic Writing",
-        estimatedMinutes: 210,
-      },
-      {
-        id: "bitl-analytical-exposition-nuanced-texts",
-        title: "Analytical Exposition & Nuanced Texts",
-        estimatedMinutes: 180,
-      },
-    ],
-  },
-];
-
-/** Semua ID sub-materi, dipakai untuk menghitung progress total. */
-const ALL_SUBTOPIC_IDS: string[] = SUBJECTS.flatMap((subject) =>
-  subject.subtopics.map((subtopic) => subtopic.id),
-);
-
-const TOTAL_SUBTOPICS = ALL_SUBTOPIC_IDS.length;
 
 /* ------------------------------------------------------------------
  * 2. HELPER & KONSTANTA STYLING
@@ -280,6 +142,36 @@ function readStoredProgress(): ProgressMap {
   }
 }
 
+/** Semua id soal TKA (untuk sanitasi data tersimpan). */
+const ALL_TKA_IDS: string[] = ALL_SUBTOPICS.flatMap((st) =>
+  (st.tkaSoal ?? []).map((q) => q.id),
+);
+
+/** Baca jawaban TKA tersimpan + sanitasi terhadap id soal yang dikenal. */
+function readStoredAnswers(): AnswerMap {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_ANSWERS);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const source = parsed as Record<string, unknown>;
+    const result: AnswerMap = {};
+    for (const id of ALL_TKA_IDS) {
+      const v = source[id];
+      if (
+        Array.isArray(v) &&
+        v.length > 0 &&
+        v.every((x) => typeof x === "string")
+      ) {
+        result[id] = v as string[];
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 type Countdown = {
   days: number;
   hours: number;
@@ -356,6 +248,12 @@ export default function StudyPlannerPage() {
   const [progress, setProgress] = useState<ProgressMap>(() =>
     typeof window === "undefined" ? {} : readStoredProgress(),
   );
+  /** Jawaban TKA per soal (questionId -> opsi terpilih / teks isian). */
+  const [answers, setAnswers] = useState<AnswerMap>(() =>
+    typeof window === "undefined" ? {} : readStoredAnswers(),
+  );
+  /** Sub-materi yang sedang dibuka panel latihan TKA-nya. */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
 
@@ -378,25 +276,79 @@ export default function StudyPlannerPage() {
     }
   }, [progress]);
 
+  /* ------- PERSIST: simpan jawaban TKA tiap berubah ------- */
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_ANSWERS,
+        JSON.stringify(answers),
+      );
+    } catch {
+      // Abaikan kegagalan storage.
+    }
+  }, [answers]);
+
   /* ---------------- ACTIONS ---------------- */
-  const toggleSubtopic = useCallback((id: string) => {
-    setProgress((prev) => ({ ...prev, [id]: !prev[id] }));
-  }, []);
-
-  const resetProgress = useCallback(() => {
-    setProgress({});
-  }, []);
-
-  const setSubjectAll = useCallback((subject: Subject, done: boolean) => {
-    setProgress((prev) => {
+  const setAnswer = useCallback((questionId: string, value: string[]) => {
+    setAnswers((prev) => {
       const next = { ...prev };
-      for (const subtopic of subject.subtopics) {
-        if (done) next[subtopic.id] = true;
-        else delete next[subtopic.id];
-      }
+      if (value.length === 0) delete next[questionId];
+      else next[questionId] = value;
       return next;
     });
   }, []);
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }, []);
+
+  const toggleSubtopic = useCallback(
+    (subtopic: Subtopic) => {
+      setProgress((prev) => {
+        // Membatalkan centang selalu boleh.
+        if (prev[subtopic.id]) {
+          const next = { ...prev };
+          delete next[subtopic.id];
+          return next;
+        }
+        // Mencentang "Selesai" hanya bila semua soal TKA sudah benar.
+        if (!isSubtopicUnlocked(subtopic, answers)) return prev;
+        return { ...prev, [subtopic.id]: true };
+      });
+    },
+    [answers],
+  );
+
+  const resetProgress = useCallback(() => {
+    setProgress({});
+    setAnswers({});
+    setExpanded({});
+    try {
+      window.localStorage.removeItem(STORAGE_KEY_ANSWERS);
+    } catch {
+      // Abaikan.
+    }
+  }, []);
+
+  const setSubjectAll = useCallback(
+    (subject: Subject, done: boolean) => {
+      setProgress((prev) => {
+        const next = { ...prev };
+        for (const chapter of subject.chapters) {
+          for (const subtopic of chapter.subtopics) {
+            if (!done) {
+              delete next[subtopic.id];
+              continue;
+            }
+            // Hanya sub-materi yang sudah terbuka yang boleh dicentang massal.
+            if (isSubtopicUnlocked(subtopic, answers)) next[subtopic.id] = true;
+          }
+        }
+        return next;
+      });
+    },
+    [answers],
+  );
 
   const restartPlanner = useCallback(() => {
     const now = Date.now();
@@ -415,10 +367,7 @@ export default function StudyPlannerPage() {
   );
   const totalPercent = percent(doneCount, TOTAL_SUBTOPICS);
 
-  const allSubtopics = useMemo(
-    () => SUBJECTS.flatMap((subject) => subject.subtopics),
-    [],
-  );
+  const allSubtopics = useMemo(() => ALL_SUBTOPICS, []);
 
   const doneMinutes = useMemo(
     () =>
@@ -437,14 +386,15 @@ export default function StudyPlannerPage() {
   const subjectStats = useMemo(
     () =>
       SUBJECTS.map((subject) => {
-        const subjectDone = subject.subtopics.filter(
+        const subjectSubtopics = getSubtopicsBySubject(subject.id);
+        const subjectDone = subjectSubtopics.filter(
           (subtopic) => progress[subtopic.id],
         ).length;
         return {
           subject,
           done: subjectDone,
-          total: subject.subtopics.length,
-          percent: percent(subjectDone, subject.subtopics.length),
+          total: subjectSubtopics.length,
+          percent: percent(subjectDone, subjectSubtopics.length),
         };
       }),
     [progress],
@@ -462,16 +412,19 @@ export default function StudyPlannerPage() {
     return SUBJECTS.filter(
       (subject) => activeFilter === "all" || subject.id === activeFilter,
     )
-      .map((subject) => ({
-        subject,
-        subtopics: query
-          ? subject.subtopics.filter(
-              (subtopic) =>
-                subtopic.title.toLowerCase().includes(query) ||
-                subject.title.toLowerCase().includes(query),
-            )
-          : subject.subtopics,
-      }))
+      .map((subject) => {
+        const subjectSubtopics = getSubtopicsBySubject(subject.id);
+        return {
+          subject,
+          subtopics: query
+            ? subjectSubtopics.filter(
+                (subtopic) =>
+                  subtopic.title.toLowerCase().includes(query) ||
+                  subject.title.toLowerCase().includes(query),
+              )
+            : subjectSubtopics,
+        };
+      })
       .filter((entry) => entry.subtopics.length > 0);
   }, [activeFilter, searchQuery]);
 
@@ -794,10 +747,11 @@ export default function StudyPlannerPage() {
         <section className="mt-6 space-y-5">
           {visibleSubjects.map(({ subject, subtopics }) => {
             const accent = ACCENT_STYLES[subject.accent];
-            const subjectDone = subject.subtopics.filter(
+            const subjectSubtopics = getSubtopicsBySubject(subject.id);
+            const subjectDone = subjectSubtopics.filter(
               (subtopic) => progress[subtopic.id],
             ).length;
-            const subjectPercent = percent(subjectDone, subject.subtopics.length);
+            const subjectPercent = percent(subjectDone, subjectSubtopics.length);
             const allDone = subjectPercent === 100;
 
             return (
@@ -847,7 +801,7 @@ export default function StudyPlannerPage() {
                       />
                     </div>
                     <span className="shrink-0 text-xs font-medium text-slate-500 tabular-nums">
-                      {subjectDone}/{subject.subtopics.length}
+                      {subjectDone}/{subjectSubtopics.length}
                     </span>
                   </div>
                 </div>
@@ -856,51 +810,98 @@ export default function StudyPlannerPage() {
                   {subtopics.map((subtopic) => {
                     const isDone = Boolean(progress[subtopic.id]);
                     const checkboxId = `check-${subtopic.id}`;
+                    const tka = subtopic.tkaSoal ?? [];
+                    const hasTka = tka.length > 0;
+                    const correctCount = tkaCorrectCount(subtopic, answers);
+                    const unlocked = isSubtopicUnlocked(subtopic, answers);
+                    const open = Boolean(expanded[subtopic.id]);
                     return (
                       <li key={subtopic.id}>
-                        <label
-                          htmlFor={checkboxId}
-                          className="flex cursor-pointer items-center gap-3 px-5 py-3.5 transition select-none hover:bg-slate-50"
-                        >
-                          <input
-                            id={checkboxId}
-                            type="checkbox"
-                            checked={isDone}
-                            onChange={() => toggleSubtopic(subtopic.id)}
-                            className="peer sr-only"
-                          />
-                          <span
-                            aria-hidden="true"
-                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 border-slate-300 text-[11px] font-bold text-white transition peer-checked:border-emerald-500 peer-checked:bg-emerald-500 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-300 peer-focus-visible:ring-offset-2"
+                        <div className="flex items-center gap-3 px-5 py-3.5 transition select-none hover:bg-slate-50">
+                          <label
+                            htmlFor={checkboxId}
+                            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3"
                           >
-                            {isDone ? "✓" : ""}
-                          </span>
-
-                          <span className="min-w-0 flex-1">
+                            <input
+                              id={checkboxId}
+                              type="checkbox"
+                              checked={isDone}
+                              disabled={!unlocked && !isDone}
+                              onChange={() => toggleSubtopic(subtopic)}
+                              className="peer sr-only"
+                            />
                             <span
-                              className={`block text-sm font-medium transition ${
-                                isDone
-                                  ? "text-slate-400 line-through"
-                                  : "text-slate-700"
+                              aria-hidden="true"
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 border-slate-300 text-[11px] font-bold text-white transition peer-checked:border-emerald-500 peer-checked:bg-emerald-500 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-300 peer-focus-visible:ring-offset-2 peer-disabled:opacity-40"
+                            >
+                              {isDone ? "✓" : ""}
+                            </span>
+
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className={`block text-sm font-medium transition ${
+                                  isDone
+                                    ? "text-slate-400 line-through"
+                                    : "text-slate-700"
+                                }`}
+                              >
+                                {subtopic.title}
+                              </span>
+                              <span className="mt-0.5 block text-xs text-slate-400">
+                                Estimasi {formatMinutes(subtopic.estimatedMinutes)}
+                              </span>
+                            </span>
+                          </label>
+
+                          {hasTka && (
+                            <button
+                              type="button"
+                              onClick={() => toggleExpanded(subtopic.id)}
+                              aria-expanded={open}
+                              className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
+                                unlocked
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                  : "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
                               }`}
                             >
-                              {subtopic.title}
-                            </span>
-                            <span className="mt-0.5 block text-xs text-slate-400">
-                              Estimasi {formatMinutes(subtopic.estimatedMinutes)}
-                            </span>
-                          </span>
+                              🔓 Latihan {correctCount}/{tka.length}
+                            </button>
+                          )}
 
                           <span
                             className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] font-semibold ${
                               isDone
                                 ? "bg-emerald-50 text-emerald-600"
-                                : "bg-slate-100 text-slate-500"
+                                : !hasTka
+                                  ? "bg-slate-100 text-slate-500"
+                                  : unlocked
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-slate-100 text-slate-500"
                             }`}
                           >
-                            {isDone ? "Selesai" : "Belum"}
+                            {isDone
+                              ? "Selesai"
+                              : !hasTka
+                                ? "Belum"
+                                : unlocked
+                                  ? "Siap centang"
+                                  : "Kunci"}
                           </span>
-                        </label>
+                        </div>
+
+                        {open && (
+                          <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 px-5 py-4">
+                            <p className="text-xs text-slate-500">
+                              Selesaikan semua soal TKA di bawah dengan benar
+                              untuk membuka centang sub-materi ini.
+                            </p>
+                            <TkaExercise
+                              subtopic={subtopic}
+                              answers={answers}
+                              onAnswer={setAnswer}
+                            />
+                          </div>
+                        )}
                       </li>
                     );
                   })}
