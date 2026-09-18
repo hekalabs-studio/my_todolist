@@ -20,10 +20,20 @@ import {
 } from "./data/curriculum";
 
 import TkaExercise, {
+  isAnswerCorrect,
   isSubtopicUnlocked,
   tkaCorrectCount,
   type AnswerMap,
 } from "./components/TkaExercise";
+import PomodoroTimer from "./components/PomodoroTimer";
+import InterleavingDrillModal from "./components/InterleavingDrillModal";
+import ErrorLogView from "./components/ErrorLogView";
+import {
+  STORAGE_KEY_RETENTION,
+  getRetentionStatus,
+  readStoredRetention,
+  type RetentionMap,
+} from "./data/retention";
 
 /* ------------------------------------------------------------------
  * 1. KONFIGURASI & DATA MATERI TKA
@@ -261,6 +271,18 @@ export default function StudyPlannerPage() {
     typeof window === "undefined" ? null : readOrCreateStartDate(),
   );
 
+  /** Materi yang sedang difokuskan untuk sesi Pomodoro. */
+  const [pomodoroTopic, setPomodoroTopic] = useState<string | null>(null);
+  const [isPomodoroExpanded, setIsPomodoroExpanded] = useState<boolean>(false);
+
+  /** Kontrol modal Mode Drill Campuran (Interleaving). */
+  const [isDrillOpen, setIsDrillOpen] = useState<boolean>(false);
+
+  /** Data Retensi Memori (Spaced Repetition Kurva Lupa Ebbinghaus). */
+  const [retention, setRetention] = useState<RetentionMap>(() =>
+    typeof window === "undefined" ? {} : readStoredRetention(),
+  );
+
   /** Waktu sekarang, di-update otomatis tiap detik tanpa setState di effect. */
   const nowMs = useNow();
 
@@ -288,6 +310,18 @@ export default function StudyPlannerPage() {
     }
   }, [answers]);
 
+  /* ------- PERSIST: simpan data retensi Spaced Repetition ------- */
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_RETENTION,
+        JSON.stringify(retention),
+      );
+    } catch {
+      // Abaikan kegagalan storage.
+    }
+  }, [retention]);
+
   /* ---------------- ACTIONS ---------------- */
   const setAnswer = useCallback((questionId: string, value: string[]) => {
     setAnswers((prev) => {
@@ -296,6 +330,10 @@ export default function StudyPlannerPage() {
       else next[questionId] = value;
       return next;
     });
+  }, []);
+
+  const handleDrillSaveAnswers = useCallback((newAnswers: Record<string, string[]>) => {
+    setAnswers((prev) => ({ ...prev, ...newAnswers }));
   }, []);
 
   const toggleExpanded = useCallback((id: string) => {
@@ -313,11 +351,46 @@ export default function StudyPlannerPage() {
         }
         // Mencentang "Selesai" hanya bila semua soal TKA sudah benar.
         if (!isSubtopicUnlocked(subtopic, answers)) return prev;
+
+        // Catat tanggal penyelesaian pertama untuk Spaced Repetition jika belum ada
+        const now = Date.now();
+        setRetention((rPrev) => {
+          if (rPrev[subtopic.id]) return rPrev;
+          return {
+            ...rPrev,
+            [subtopic.id]: {
+              completedAt: now,
+              lastReviewedAt: now,
+              reviewCount: 0,
+            },
+          };
+        });
+
         return { ...prev, [subtopic.id]: true };
       });
     },
     [answers],
   );
+
+  /** Tandai bahwa sub-materi ini telah direview kilat hari ini */
+  const markSubtopicReviewed = useCallback((subtopicId: string) => {
+    const now = Date.now();
+    setRetention((prev) => {
+      const cur = prev[subtopicId] ?? {
+        completedAt: now,
+        lastReviewedAt: now,
+        reviewCount: 0,
+      };
+      return {
+        ...prev,
+        [subtopicId]: {
+          ...cur,
+          lastReviewedAt: now,
+          reviewCount: cur.reviewCount + 1,
+        },
+      };
+    });
+  }, []);
 
   const resetProgress = useCallback(() => {
     setProgress({});
@@ -406,14 +479,56 @@ export default function StudyPlannerPage() {
     [startMs, nowMs],
   );
 
+  /** Jumlah soal yang saat ini masih tercatat salah (untuk badge Buku Dosa). */
+  const wrongQuestionsCount = useMemo(() => {
+    let count = 0;
+    for (const st of ALL_SUBTOPICS) {
+      for (const q of st.tkaSoal ?? []) {
+        const ans = answers[q.id];
+        if (ans && ans.length > 0 && !isAnswerCorrect(q, ans)) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [answers]);
+
+  /** Jumlah materi yang sudah jatuh tempo untuk direview hari ini (Spaced Repetition). */
+  const dueForReviewCount = useMemo(() => {
+    if (nowMs === null) return 0;
+    let count = 0;
+    for (const id of ALL_SUBTOPIC_IDS) {
+      if (progress[id]) {
+        const status = getRetentionStatus(retention[id], nowMs);
+        if (status.isDue) count++;
+      }
+    }
+    return count;
+  }, [progress, retention, nowMs]);
+
   /** Mata pelajaran yang lolos filter tab + pencarian. */
   const visibleSubjects = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return SUBJECTS.filter(
-      (subject) => activeFilter === "all" || subject.id === activeFilter,
-    )
+    const currentMs = nowMs ?? (startMs ?? 0);
+
+    return SUBJECTS.filter((subject) => {
+      if (activeFilter === "all") return true;
+      if (activeFilter === "buku-dosa") return false;
+      if (activeFilter === "perlu-review") return true;
+      return subject.id === activeFilter;
+    })
       .map((subject) => {
-        const subjectSubtopics = getSubtopicsBySubject(subject.id);
+        let subjectSubtopics = getSubtopicsBySubject(subject.id);
+
+        // Jika filter "perlu-review", hanya tampilkan sub-materi yang sedang jatuh tempo review
+        if (activeFilter === "perlu-review") {
+          subjectSubtopics = subjectSubtopics.filter((subtopic) => {
+            if (!progress[subtopic.id]) return false;
+            const status = getRetentionStatus(retention[subtopic.id], currentMs);
+            return status.isDue;
+          });
+        }
+
         return {
           subject,
           subtopics: query
@@ -426,7 +541,7 @@ export default function StudyPlannerPage() {
         };
       })
       .filter((entry) => entry.subtopics.length > 0);
-  }, [activeFilter, searchQuery]);
+  }, [activeFilter, searchQuery, progress, retention, nowMs, startMs]);
 
   /** Rekomendasi target harian: sisa sub-materi dibagi sisa hari. */
   const dailyTarget = useMemo(() => {
@@ -480,6 +595,22 @@ export default function StudyPlannerPage() {
                 {countdown ? countdown.targetLabel : "—"}
               </p>
             </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setPomodoroTopic("Persiapan Belajar TKA & SNBT");
+                setIsPomodoroExpanded(true);
+              }}
+              className="flex items-center gap-2.5 rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-indigo-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-100/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+              title="Buka widget Pomodoro Focus Timer"
+            >
+              <span className="text-xl" aria-hidden="true">🍅</span>
+              <div className="text-left">
+                <p className="text-[10px] font-bold tracking-wider text-indigo-600 uppercase">Focus Timer</p>
+                <p className="text-xs font-bold text-indigo-950">25m Pomodoro</p>
+              </div>
+            </button>
           </div>
         </header>
 
@@ -566,6 +697,43 @@ export default function StudyPlannerPage() {
                   </>
                 ) : (
                   <>🎉 Semua materi sudah tuntas. Saatnya fokus latihan soal!</>
+                )}
+              </p>
+            </div>
+
+            {/* Rekomendasi Spaced Repetition */}
+            <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-indigo-900">
+                  📅 Pengingat Spaced Repetition (Kurva Ebbinghaus)
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    dueForReviewCount > 0
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-emerald-100 text-emerald-800"
+                  }`}
+                >
+                  {dueForReviewCount > 0
+                    ? `${dueForReviewCount} Perlu Review`
+                    : "Semua Aman"}
+                </span>
+              </div>
+              <p className="mt-1 text-indigo-950 leading-relaxed">
+                {dueForReviewCount > 0 ? (
+                  <>
+                    Ada{" "}
+                    <span className="font-bold text-amber-800">
+                      {dueForReviewCount} sub-materi
+                    </span>{" "}
+                    yang masuk jadwal review (H+1/H+3/H+7). Ulangi kilat agar tidak
+                    lupa!
+                  </>
+                ) : (
+                  <>
+                    Semua materi yang kamu kuasai masih dalam status retensi aman.
+                    Teruskan konsistensimu!
+                  </>
                 )}
               </p>
             </div>
@@ -684,7 +852,22 @@ export default function StudyPlannerPage() {
         {/* ============ FILTER TABS + SEARCH ============ */}
         <section className="mt-10">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="-mx-1 flex flex-wrap gap-2 px-1">
+            <div className="-mx-1 flex flex-wrap items-center gap-2 px-1">
+              <button
+                type="button"
+                onClick={() => setIsDrillOpen(true)}
+                className="flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-900 shadow-sm transition hover:border-amber-400 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+                title="Latihan soal acak campuran lintas topik (Interleaving Practice)"
+              >
+                <span className="text-base" aria-hidden="true">⚡</span>
+                <span>Drill Campuran</span>
+                <span className="rounded-md bg-amber-200/80 px-1.5 py-0.5 text-[10px] font-extrabold tracking-wide uppercase text-amber-950">
+                  Interleaving
+                </span>
+              </button>
+
+              <div className="hidden h-5 w-px bg-slate-200 sm:block" />
+
               <button
                 type="button"
                 onClick={() => setActiveFilter("all")}
@@ -696,6 +879,52 @@ export default function StudyPlannerPage() {
                 }`}
               >
                 🗂️ Semua ({TOTAL_SUBTOPICS})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveFilter("buku-dosa")}
+                aria-pressed={activeFilter === "buku-dosa"}
+                className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-sm font-semibold shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 ${
+                  activeFilter === "buku-dosa"
+                    ? "border-rose-600 bg-rose-600 text-white shadow-rose-200"
+                    : "border-rose-200 bg-rose-50/80 text-rose-700 hover:border-rose-300 hover:bg-rose-100/80"
+                }`}
+              >
+                <span>📕</span>
+                <span>Buku Dosa</span>
+                <span
+                  className={`ml-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${
+                    activeFilter === "buku-dosa"
+                      ? "bg-white/20 text-white"
+                      : "bg-rose-200/80 text-rose-900"
+                  }`}
+                >
+                  {wrongQuestionsCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveFilter("perlu-review")}
+                aria-pressed={activeFilter === "perlu-review"}
+                className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-sm font-semibold shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 ${
+                  activeFilter === "perlu-review"
+                    ? "border-amber-600 bg-amber-600 text-white shadow-amber-200"
+                    : "border-amber-200 bg-amber-50/80 text-amber-800 hover:border-amber-300 hover:bg-amber-100/80"
+                }`}
+              >
+                <span>📅</span>
+                <span>Perlu Review</span>
+                <span
+                  className={`ml-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${
+                    activeFilter === "perlu-review"
+                      ? "bg-white/20 text-white"
+                      : "bg-amber-200/90 text-amber-950"
+                  }`}
+                >
+                  {dueForReviewCount}
+                </span>
               </button>
 
               {subjectStats.map(({ subject, total, done }) => {
@@ -743,9 +972,18 @@ export default function StudyPlannerPage() {
           </div>
         </section>
 
-        {/* ============ DAFTAR MATERI (CHECKLIST) ============ */}
-        <section className="mt-6 space-y-5">
-          {visibleSubjects.map(({ subject, subtopics }) => {
+        {/* ============ TAMPILAN: BUKU DOSA ATAU DAFTAR MATERI ============ */}
+        {activeFilter === "buku-dosa" ? (
+          <section className="mt-6">
+            <ErrorLogView
+              answers={answers}
+              onAnswer={setAnswer}
+              onStartDrill={() => setIsDrillOpen(true)}
+            />
+          </section>
+        ) : (
+          <section className="mt-6 space-y-5">
+            {visibleSubjects.map(({ subject, subtopics }) => {
             const accent = ACCENT_STYLES[subject.accent];
             const subjectSubtopics = getSubtopicsBySubject(subject.id);
             const subjectDone = subjectSubtopics.filter(
@@ -815,9 +1053,13 @@ export default function StudyPlannerPage() {
                     const correctCount = tkaCorrectCount(subtopic, answers);
                     const unlocked = isSubtopicUnlocked(subtopic, answers);
                     const open = Boolean(expanded[subtopic.id]);
+                    const retentionStatus = getRetentionStatus(
+                      retention[subtopic.id],
+                      nowMs ?? (startMs ?? 0)
+                    );
                     return (
                       <li key={subtopic.id}>
-                        <div className="flex items-center gap-3 px-5 py-3.5 transition select-none hover:bg-slate-50">
+                        <div className="flex flex-wrap items-center gap-3 px-5 py-3.5 transition select-none hover:bg-slate-50">
                           <label
                             htmlFor={checkboxId}
                             className="flex min-w-0 flex-1 cursor-pointer items-center gap-3"
@@ -852,6 +1094,41 @@ export default function StudyPlannerPage() {
                               </span>
                             </span>
                           </label>
+
+                          {/* BADGE SPACED REPETITION & REVIEW BUTTON */}
+                          {isDone && (
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`rounded-md border px-2 py-0.5 text-[10px] font-bold ${
+                                  retentionStatus.badgeCls
+                                }`}
+                                title={`Dipantau dengan kurva lupa Ebbinghaus. Terakhir review: ${retentionStatus.daysAgo} hari lalu.`}
+                              >
+                                {retentionStatus.label}
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={() => markSubtopicReviewed(subtopic.id)}
+                                className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+                                title="Tandai sub-materi ini telah direview kilat hari ini"
+                              >
+                                🔄 Review
+                              </button>
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPomodoroTopic(`${subject.shortTitle}: ${subtopic.title}`);
+                              setIsPomodoroExpanded(true);
+                            }}
+                            className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+                            title="Fokuskan timer Pomodoro untuk materi ini"
+                          >
+                            🎯 Fokus
+                          </button>
 
                           {hasTka && (
                             <button
@@ -936,6 +1213,7 @@ export default function StudyPlannerPage() {
             </div>
           )}
         </section>
+        )}
 
         {/* ================= FOOTER ================= */}
         <footer className="mt-10 border-t border-slate-200 pt-6 text-center text-xs text-slate-400">
@@ -943,6 +1221,20 @@ export default function StudyPlannerPage() {
           aman walau halaman di-refresh atau tab ditutup.
         </footer>
 
+        {/* ================= WIDGET FOCUS POMODORO ================= */}
+        <PomodoroTimer
+          activeTopic={pomodoroTopic}
+          onClearTopic={() => setPomodoroTopic(null)}
+          isExpanded={isPomodoroExpanded}
+          onExpandedChange={setIsPomodoroExpanded}
+        />
+
+        {/* ================= MODAL DRILL CAMPURAN (INTERLEAVING) ================= */}
+        <InterleavingDrillModal
+          isOpen={isDrillOpen}
+          onClose={() => setIsDrillOpen(false)}
+          onSaveAnswers={handleDrillSaveAnswers}
+        />
       </div>
     </div>
   );

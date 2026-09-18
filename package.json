@@ -10,6 +10,8 @@
     "validate:data": "node scripts/validate-curriculum.mjs"
   },
   "dependencies": {
+    "@types/katex": "^0.16.8",
+    "katex": "^0.18.7",
     "next": "16.3.5",
     "react": "19.2.8",
     "react-dom": "19.2.8"

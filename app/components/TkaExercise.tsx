@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Subtopic, TkaQuestion } from "../data/curriculum";
+import MathText from "./MathText";
 
 /** Peta jawaban per soal: questionId -> daftar id opsi terpilih / [teks] untuk isian. */
 export type AnswerMap = Record<string, string[]>;
@@ -60,6 +61,23 @@ const LEVEL_LABEL: Record<TkaQuestion["level"], string> = {
   L3: "Penalaran",
 };
 
+const STORAGE_KEY_PACING = "tka-planner:pacing:v1";
+
+function readStoredPacing(): { enabled: boolean; duration: number } {
+  if (typeof window === "undefined") return { enabled: false, duration: 90 };
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY_PACING);
+    if (!raw) return { enabled: false, duration: 90 };
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: Boolean(parsed.enabled),
+      duration: typeof parsed.duration === "number" ? parsed.duration : 90,
+    };
+  } catch {
+    return { enabled: false, duration: 90 };
+  }
+}
+
 /* -------------------- KARTU SOAL -------------------- */
 
 type CardProps = {
@@ -67,14 +85,53 @@ type CardProps = {
   index: number;
   value: string[];
   onAnswer: (value: string[]) => void;
+  pacingEnabled: boolean;
+  pacingDuration: number;
 };
 
-function QuestionCard({ q, index, value, onAnswer }: CardProps) {
+function QuestionCard({
+  q,
+  index,
+  value,
+  onAnswer,
+  pacingEnabled,
+  pacingDuration,
+}: CardProps) {
   const [draft, setDraft] = useState<string>(value[0] ?? "");
   const answered = value.length > 0;
   const correct = isAnswerCorrect(q, value);
 
+  // Pacing timer state
+  const [secondsLeft, setSecondsLeft] = useState<number>(pacingDuration);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [timeTaken, setTimeTaken] = useState<number | null>(null);
+
+  // Sync state if pacingDuration changes
+  const [prevDuration, setPrevDuration] = useState<number>(pacingDuration);
+  if (pacingDuration !== prevDuration) {
+    setPrevDuration(pacingDuration);
+    setSecondsLeft(pacingDuration);
+    setTimeTaken(null);
+  }
+
+  // Timer ticker per question
+  useEffect(() => {
+    if (!pacingEnabled || answered || isPaused) return;
+
+    const interval = window.setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) return 0;
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [pacingEnabled, answered, isPaused]);
+
   const optionPick = (id: string) => {
+    if (!answered && timeTaken === null && pacingEnabled) {
+      setTimeTaken(Math.max(1, pacingDuration - secondsLeft));
+    }
     if (q.bentuk === "pg") {
       onAnswer([id]);
       return;
@@ -85,9 +142,25 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
     onAnswer([...set].sort());
   };
 
+  const handleIsianCheck = () => {
+    const trimmed = draft.trim();
+    if (trimmed) {
+      if (!answered && timeTaken === null && pacingEnabled) {
+        setTimeTaken(Math.max(1, pacingDuration - secondsLeft));
+      }
+      onAnswer([trimmed]);
+    }
+  };
+
+  const formatPacingTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+  };
+
   return (
     <div
-      className={`rounded-xl border p-4 transition ${
+      className={`rounded-2xl border p-4 transition ${
         correct
           ? "border-emerald-200 bg-emerald-50/40"
           : answered
@@ -107,13 +180,94 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
         </span>
       </div>
 
+      {/* BAR PACING COUNTDOWN (Jika aktif) */}
+      {pacingEnabled && (
+        <div className="mb-3 rounded-xl border border-slate-200/80 bg-slate-50/80 p-2.5 text-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm" aria-hidden="true">
+                ⏱️
+              </span>
+              <span className="font-semibold text-slate-700">Pacing:</span>
+              <span className="font-mono font-bold tabular-nums text-slate-900">
+                {answered
+                  ? timeTaken !== null
+                    ? `${timeTaken}s selesai`
+                    : "Selesai"
+                  : formatPacingTime(secondsLeft)}
+              </span>
+
+              {answered && timeTaken !== null && (
+                <span
+                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                    timeTaken <= pacingDuration
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-rose-100 text-rose-800"
+                  }`}
+                >
+                  {timeTaken <= pacingDuration ? "⚡ On Pacing" : "⏱️ Overtime"}
+                </span>
+              )}
+            </div>
+
+            {!answered && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIsPaused((p) => !p)}
+                  className="rounded px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-200"
+                >
+                  {isPaused ? "▶️ Lanjut" : "⏸️ Jeda"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSecondsLeft(pacingDuration)}
+                  className="rounded px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-200"
+                >
+                  🔄 Reset
+                </button>
+              </div>
+            )}
+          </div>
+
+          {!answered && (
+            <div className="mt-2">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    secondsLeft / pacingDuration > 0.5
+                      ? "bg-emerald-500"
+                      : secondsLeft / pacingDuration > 0.2
+                        ? "bg-amber-500"
+                        : "bg-rose-500 animate-pulse"
+                  }`}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.max(0, (secondsLeft / pacingDuration) * 100)
+                    )}%`,
+                  }}
+                />
+              </div>
+              {secondsLeft === 0 && (
+                <p className="mt-1 text-[11px] font-medium text-rose-600">
+                  ⚠️ Waktu target {pacingDuration}s habis! Tentukan opsi atau lanjut ke soal berikutnya.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {q.stimulus && (
         <blockquote className="mb-2 rounded-lg border-l-4 border-slate-300 bg-slate-50 px-3 py-2 text-sm italic text-slate-600">
-          {q.stimulus}
+          <MathText text={q.stimulus} />
         </blockquote>
       )}
 
-      <p className="text-sm font-semibold text-slate-800">{q.question}</p>
+      <div className="text-sm font-semibold text-slate-800">
+        <MathText text={q.question} />
+      </div>
 
       {q.bentuk === "isian" ? (
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -126,7 +280,7 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
           />
           <button
             type="button"
-            onClick={() => onAnswer(draft.trim() ? [draft.trim()] : [])}
+            onClick={handleIsianCheck}
             disabled={correct || draft.trim() === ""}
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -158,7 +312,9 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
                   <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-current text-[11px] font-bold">
                     {opt.id}
                   </span>
-                  <span className="min-w-0 flex-1">{opt.text}</span>
+                  <span className="min-w-0 flex-1">
+                    <MathText text={opt.text} />
+                  </span>
                 </button>
               </li>
             );
@@ -173,7 +329,11 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
           }`}
         >
           <p className="font-bold">{correct ? "✓ Benar!" : "✗ Belum tepat"}</p>
-          {correct && <p className="mt-1 text-emerald-700">{q.explanation}</p>}
+          {correct && (
+            <div className="mt-1 text-emerald-700">
+              <MathText text={q.explanation} />
+            </div>
+          )}
           {!correct && (
             <>
               <p className="mt-1 text-rose-700">
@@ -183,6 +343,8 @@ function QuestionCard({ q, index, value, onAnswer }: CardProps) {
                 type="button"
                 onClick={() => {
                   setDraft("");
+                  setTimeTaken(null);
+                  setSecondsLeft(pacingDuration);
                   onAnswer([]);
                 }}
                 className="mt-2 rounded-md border border-rose-300 bg-white px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
@@ -206,6 +368,26 @@ type Props = {
 };
 
 export default function TkaExercise({ subtopic, answers, onAnswer }: Props) {
+  const [pacingEnabled, setPacingEnabled] = useState<boolean>(() => {
+    return readStoredPacing().enabled;
+  });
+
+  const [pacingDuration, setPacingDuration] = useState<number>(() => {
+    return readStoredPacing().duration;
+  });
+
+  // Simpan setting pacing ke LocalStorage
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_PACING,
+        JSON.stringify({ enabled: pacingEnabled, duration: pacingDuration })
+      );
+    } catch {
+      // Abaikan
+    }
+  }, [pacingEnabled, pacingDuration]);
+
   const tka = subtopic.tkaSoal ?? [];
   if (tka.length === 0) {
     return (
@@ -214,8 +396,56 @@ export default function TkaExercise({ subtopic, answers, onAnswer }: Props) {
       </p>
     );
   }
+
   return (
     <div className="space-y-3">
+      {/* TOOLBAR MODE PACING */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-100 bg-indigo-50/70 p-3 text-xs">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPacingEnabled((prev) => !prev)}
+            className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-bold transition ${
+              pacingEnabled
+                ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
+                : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+            }`}
+          >
+            <span>⏱️</span>
+            <span>Mode Pacing: {pacingEnabled ? "ON" : "OFF"}</span>
+          </button>
+          <span className="hidden text-slate-500 sm:inline text-[11px]">
+            Target waktu per butir soal SNBT
+          </span>
+        </div>
+
+        {pacingEnabled && (
+          <div className="flex items-center gap-1">
+            <span className="text-slate-400 text-[10px] uppercase font-bold mr-1">
+              Batas:
+            </span>
+            {[
+              { label: "60s TPS", value: 60 },
+              { label: "90s Standar", value: 90 },
+              { label: "120s HOTS", value: 120 },
+            ].map((preset) => (
+              <button
+                key={preset.value}
+                type="button"
+                onClick={() => setPacingDuration(preset.value)}
+                className={`rounded-md px-2 py-0.5 text-[11px] font-bold transition ${
+                  pacingDuration === preset.value
+                    ? "bg-slate-900 text-white shadow-sm"
+                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {tka.map((q, i) => (
         <QuestionCard
           key={q.id}
@@ -223,9 +453,10 @@ export default function TkaExercise({ subtopic, answers, onAnswer }: Props) {
           index={i}
           value={answers[q.id] ?? []}
           onAnswer={(v) => onAnswer(q.id, v)}
+          pacingEnabled={pacingEnabled}
+          pacingDuration={pacingDuration}
         />
       ))}
     </div>
   );
 }
-
